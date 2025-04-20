@@ -72,19 +72,21 @@ class MainActivity : AppCompatActivity() {
 
         Toast.makeText(this, "Начало съемки...", Toast.LENGTH_SHORT).show()
 
-        // Настройки для серийной съемки
         val settings = listOf(
-            RawCaptureManager.CaptureSettings(iso = 100, exposureTime = 1_000_000L),  // Низкий ISO, длинная выдержка
-            RawCaptureManager.CaptureSettings(iso = 400, exposureTime = 500_000L),   // Средний ISO
-            RawCaptureManager.CaptureSettings(iso = 800, exposureTime = 250_000L)    // Высокий ISO, короткая выдержка
+            RawCaptureManager.CaptureSettings(iso = 100, exposureTime = 1_000_000L),
+            RawCaptureManager.CaptureSettings(iso = 400, exposureTime = 500_000L),
+            RawCaptureManager.CaptureSettings(iso = 800, exposureTime = 250_000L)
         )
 
-        rawCapture.captureBurst(settings) { files ->
+        rawCapture.captureBurst(settings) { results ->
             runOnUiThread {
-                if (files.isNotEmpty()) {
+                if (results.isNotEmpty()) {
+                    val firstResult = results.first()
                     Toast.makeText(
                         this,
-                        "Успешно сохранено ${files.size} RAW изображений\nПуть: ${files.first().parent}",
+                        "Успешно сохранено ${results.size} RAW изображений\n" +
+                                "Изображения: ${firstResult.imageFile.parent}\n" +
+                                "Метаданные: ${firstResult.metadataFile.parent}",
                         Toast.LENGTH_LONG
                     ).show()
                 } else {

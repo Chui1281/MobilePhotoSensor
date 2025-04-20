@@ -14,6 +14,8 @@ import android.util.Size
 import androidx.annotation.RequiresApi
 import androidx.annotation.RequiresPermission
 import androidx.core.content.ContextCompat
+import com.example.mobilephotosensor.DeviceInfoCollector
+import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.Semaphore
@@ -32,10 +34,17 @@ class RawCaptureManager(private val context: Context) {
     private lateinit var characteristics: CameraCharacteristics
     private var currentImage: Image? = null
     private var captureSession: CameraCaptureSession? = null
+    private val deviceInfoCollector = DeviceInfoCollector(context)
 
     data class CaptureSettings(
         val iso: Int,
         val exposureTime: Long
+    )
+
+    data class CaptureResult(
+        val imageFile: File,
+        val metadataFile: File,
+        val settings: CaptureSettings
     )
 
     init {
@@ -70,7 +79,7 @@ class RawCaptureManager(private val context: Context) {
 
     fun captureBurst(
         settings: List<CaptureSettings>,
-        callback: (List<File>) -> Unit
+        callback: (List<CaptureResult>) -> Unit
     ) {
         if (!isRawSupported()) {
             callback(emptyList())
@@ -80,12 +89,11 @@ class RawCaptureManager(private val context: Context) {
         backgroundHandler.post {
             try {
                 initCamera { session ->
-                    val results = mutableListOf<File>()
+                    val results = mutableListOf<CaptureResult>()
                     settings.forEach { setting ->
                         try {
-                            val file = captureSingleImage(session, setting)
-                            file?.let { results.add(it) }
-                            // Большая задержка между снимками
+                            val result = captureSingleImage(session, setting)
+                            result?.let { results.add(it) }
                             Thread.sleep(2000)
                         } catch (e: Exception) {
                             Log.e(TAG, "Error capturing image", e)
@@ -116,7 +124,6 @@ class RawCaptureManager(private val context: Context) {
         val rawSize = map?.getOutputSizes(ImageFormat.RAW_SENSOR)?.maxByOrNull { it.width * it.height }
             ?: Size(640, 480)
 
-        // Увеличенный буфер и обработка в фоне
         imageReader = ImageReader.newInstance(
             rawSize.width, rawSize.height,
             ImageFormat.RAW_SENSOR, 4
@@ -186,7 +193,7 @@ class RawCaptureManager(private val context: Context) {
     private fun captureSingleImage(
         session: CameraCaptureSession,
         settings: CaptureSettings
-    ): File? {
+    ): CaptureResult? {
         val captureRequest = cameraDevice.createCaptureRequest(
             CameraDevice.TEMPLATE_STILL_CAPTURE
         ).apply {
@@ -194,7 +201,6 @@ class RawCaptureManager(private val context: Context) {
             set(CaptureRequest.SENSOR_SENSITIVITY, settings.iso)
             set(CaptureRequest.SENSOR_EXPOSURE_TIME, settings.exposureTime)
             set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
-            // Улучшенные настройки для RAW
             set(CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE,
                 CameraMetadata.STATISTICS_LENS_SHADING_MAP_MODE_ON)
             set(CaptureRequest.BLACK_LEVEL_LOCK, true)
@@ -224,7 +230,6 @@ class RawCaptureManager(private val context: Context) {
             }
         }, backgroundHandler)
 
-        // Увеличенный таймаут до 30 секунд
         if (!latch.await(30, TimeUnit.SECONDS)) {
             Log.e(TAG, "Capture timed out (30s)")
             return null
@@ -235,7 +240,6 @@ class RawCaptureManager(private val context: Context) {
             return null
         }
 
-        // Дополнительное ожидание изображения
         var retries = 3
         while (currentImage == null && retries > 0) {
             Thread.sleep(1000)
@@ -244,9 +248,14 @@ class RawCaptureManager(private val context: Context) {
 
         currentImage?.let { image ->
             return try {
-                val outputFile = createOutputFile()
-                saveRawImage(image, outputFile)
-                outputFile
+                val baseName = "raw_${System.currentTimeMillis()}"
+                val imageFile = createOutputFile("$baseName.dng")
+                val metadataFile = createOutputFile("$baseName.json")
+
+                saveRawImage(image, imageFile)
+                saveMetadata(settings, metadataFile)
+
+                CaptureResult(imageFile, metadataFile, settings)
             } finally {
                 image.close()
                 currentImage = null
@@ -257,9 +266,9 @@ class RawCaptureManager(private val context: Context) {
         return null
     }
 
-    private fun createOutputFile(): File {
+    private fun createOutputFile(filename: String): File {
         val dir = context.getExternalFilesDir(null) ?: context.filesDir
-        return File(dir, "raw_${System.currentTimeMillis()}.dng").apply {
+        return File(dir, filename).apply {
             parentFile?.mkdirs()
         }
     }
@@ -274,6 +283,36 @@ class RawCaptureManager(private val context: Context) {
             Log.d(TAG, "RAW saved (${outputFile.length()} bytes): ${outputFile.absolutePath}")
         } catch (e: Exception) {
             Log.e(TAG, "Error saving RAW", e)
+            outputFile.delete()
+            throw e
+        }
+    }
+
+    private fun saveMetadata(settings: CaptureSettings, outputFile: File) {
+        try {
+            val metadata = JSONObject().apply {
+                put("deviceInfo", deviceInfoCollector.collectDeviceInfo())
+                put("captureSettings", JSONObject().apply {
+                    put("iso", settings.iso)
+                    put("exposureTime", settings.exposureTime)
+                })
+                put("cameraCharacteristics", JSONObject().apply {
+                    characteristics.keys.forEach { key ->
+                        try {
+                            put(key.name, characteristics.get(key)?.toString())
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Failed to serialize characteristic $key")
+                        }
+                    }
+                })
+            }
+
+            FileOutputStream(outputFile).use { output ->
+                output.write(metadata.toString(4).toByteArray())
+            }
+            Log.d(TAG, "Metadata saved: ${outputFile.absolutePath}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error saving metadata", e)
             outputFile.delete()
             throw e
         }
