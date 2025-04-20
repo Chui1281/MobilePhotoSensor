@@ -10,8 +10,6 @@
             android:id="@+id/capture_button"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Сделать снимок"
-            android:textSize="18sp"
-            android:padding="16dp"/>
-
+            android:text="Снять RAW фотосерию"
+            android:textAllCaps="false"/>
 </LinearLayout>
